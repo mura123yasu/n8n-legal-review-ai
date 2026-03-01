@@ -1,0 +1,53 @@
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+.tfstate.d/
+*.tfplan
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+# .terraform.lock.hcl はチーム共有のためトラッキング対象
+terraform.tfvars
+!terraform.tfvars.example
+
+# 環境変数
+.env
+!.env.example
+*.env.local
+
+# GCP 認証情報
+credentials.json
+*_credentials.json
+service_account_key.json
+*.key
+*.pem
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# エディタ
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ログ
+*.log
+logs/
+
+# 一時ファイル
+tmp/
+temp/

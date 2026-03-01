@@ -1,0 +1,447 @@
+{
+  "name": "契約書AIレビュー",
+  "nodes": [
+    {
+      "id": "f8a1b2c3-d4e5-4f67-8901-23456789abcd",
+      "name": "Contract Review Poller",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "contract-review-poller",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "notes": "Cloud Scheduler が 5分ごとに呼び出す。GCP側の設定は infra/scheduler.tf を参照。"
+    },
+    {
+      "id": "a1b2c3d4-e5f6-4789-abcd-ef0123456789",
+      "name": "List Files in Inbox",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [460, 300],
+      "parameters": {
+        "operation": "fileSearch",
+        "queryString": "='{{ $vars.DRIVE_INBOX_FOLDER_ID }}' in parents and mimeType='application/pdf' and trashed=false",
+        "returnAll": true,
+        "options": {}
+      },
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "1",
+          "name": "Google Drive account"
+        }
+      },
+      "notes": "n8n Variables に DRIVE_INBOX_FOLDER_ID を設定すること。"
+    },
+    {
+      "id": "b2c3d4e5-f6a7-4890-bcde-f01234567890",
+      "name": "Files Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [680, 300],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-files-exist",
+              "leftValue": "={{ $items().length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "c3d4e5f6-a7b8-4901-cdef-012345678901",
+      "name": "No Files - End",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [900, 460],
+      "parameters": {}
+    },
+    {
+      "id": "d4e5f6a7-b8c9-4012-defa-123456789012",
+      "name": "Split In Batches",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [900, 140],
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      }
+    },
+    {
+      "id": "e5f6a7b8-c9d0-4123-efab-234567890123",
+      "name": "Move to Processing",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [1120, 140],
+      "parameters": {
+        "operation": "move",
+        "fileId": {
+          "__rl": true,
+          "value": "={{ $json.id }}",
+          "mode": "id"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "={{ $vars.DRIVE_PROCESSING_FOLDER_ID }}",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "1",
+          "name": "Google Drive account"
+        }
+      },
+      "notes": "二重処理防止: 01_inbox → 02_processing に移動してから処理開始"
+    },
+    {
+      "id": "f6a7b8c9-d0e1-4234-fabc-345678901234",
+      "name": "GAS WebApp - Extract Text",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1340, 140],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.GAS_WEBAPP_URL }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ fileId: $('Split In Batches').item.json.id }) }}",
+        "options": {
+          "timeout": 120000,
+          "response": {
+            "response": {
+              "fullResponse": false,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "notes": "GAS WebApp が PDF を OCR でテキスト変換。タイムアウトは120秒（大きいファイル対応）。"
+    },
+    {
+      "id": "a7b8c9d0-e1f2-4345-abcd-456789012345",
+      "name": "Gemini API - Analyze Contract",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1560, 140],
+      "parameters": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-goog-api-key",
+              "value": "={{ $env.GEMINI_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ contents: [{ parts: [{ text: 'あなたは経験豊富な法務レビューアシスタントAIです。以下の契約書テキストを分析し、7つの観点でリスクを抽出してください。\\n\\n## 分析観点\\n1. 当事者・契約期間・対象範囲\\n2. 支払条件・遅延損害金\\n3. 秘密保持・情報漏洩リスク\\n4. 解除・解約条件\\n5. 損害賠償・免責条項\\n6. 準拠法・管轄裁判所\\n7. その他リスク\\n\\n## 出力フォーマット\\n必ず以下のJSON形式のみで回答してください（コードブロック不要）:\\n{\"summary\":\"全体総評（200字以内）\",\"overall_risk_level\":\"高|中|低\",\"risk_counts\":{\"high\":0,\"medium\":0,\"low\":0},\"items\":[{\"category\":\"分析観点名\",\"risk_level\":\"高|中|低\",\"excerpt\":\"該当箇所の原文引用\",\"comment\":\"リスク説明\",\"action\":\"推奨アクション\"}],\"missing_clauses\":[\"不足している条項\"]}\\n\\n## 契約書テキスト\\n' + $json.text }] }], generationConfig: { temperature: 0.1, maxOutputTokens: 8192 } }) }}",
+        "options": {
+          "timeout": 120000,
+          "response": {
+            "response": {
+              "fullResponse": false,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "notes": "prompts/contract-review.md のプロンプトを参照。詳細な版は同ファイルで管理。"
+    },
+    {
+      "id": "b8c9d0e1-f2a3-4456-bcde-567890123456",
+      "name": "Parse Gemini Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1780, 140],
+      "parameters": {
+        "jsCode": "// Gemini のレスポンスからテキストを取得\nconst responseText = $input.item.json.candidates[0].content.parts[0].text;\n\n// JSON をパース（コードブロックで囲まれている場合にも対応）\nlet analysis;\ntry {\n  analysis = JSON.parse(responseText);\n} catch (e) {\n  const jsonMatch = responseText.match(/```json\\n?([\\s\\S]*?)\\n?```/);\n  if (jsonMatch) {\n    analysis = JSON.parse(jsonMatch[1]);\n  } else {\n    throw new Error('Gemini レスポンスを JSON としてパースできませんでした: ' + responseText.substring(0, 300));\n  }\n}\n\n// 現在時刻を ISO 8601 形式でセット\nanalysis.reviewed_at_utc = new Date().toISOString();\n\n// 処理中のファイル情報を追加\nconst fileItem = $('Split In Batches').item.json;\nanalysis.fileName = fileItem.name;\nanalysis.fileId = fileItem.id;\n\n// リスクサマリー文字列（メール本文・Sheets ログ用）\nconst counts = analysis.risk_counts;\nanalysis.riskSummary = `高:${counts.high}件 中:${counts.medium}件 低:${counts.low}件`;\n\nreturn [{ json: analysis }];"
+      }
+    },
+    {
+      "id": "c9d0e1f2-a3b4-4567-cdef-678901234567",
+      "name": "Create Review Document",
+      "type": "n8n-nodes-base.googleDocs",
+      "typeVersion": 2,
+      "position": [2000, 140],
+      "parameters": {
+        "operation": "create",
+        "title": "=[レビュー済]_{{ $json.fileName }}_{{ $now.format('YYYYMMDD') }}",
+        "folderId": {
+          "__rl": true,
+          "value": "={{ $vars.DRIVE_RESULTS_FOLDER_ID }}",
+          "mode": "id"
+        },
+        "content": "={{ '【契約書AIレビュー結果】\\n\\nファイル名: ' + $json.fileName + '\\nレビュー日時: ' + $json.reviewed_at_utc + '\\n\\n■ 総評\\n' + $json.summary + '\\n\\n■ リスク件数\\n' + $json.riskSummary + '\\n\\n■ 総合リスクレベル: ' + $json.overall_risk_level + '\\n\\n────────────────────────────\\n■ リスク詳細\\n\\n' + $json.items.map((item, i) => `[${i+1}] ${item.category} (${item.risk_level})\\n  該当箇所: ${item.excerpt}\\n  リスク: ${item.comment}\\n  対応: ${item.action}\\n`).join('\\n') + '\\n────────────────────────────\\n■ 不足している条項\\n' + ($json.missing_clauses || []).map(c => '・' + c).join('\\n') + '\\n\\n※ 本レビューはAIによる補助資料です。最終判断は必ず法務担当者が行ってください。' }}",
+        "options": {}
+      },
+      "credentials": {
+        "googleDocsOAuth2Api": {
+          "id": "2",
+          "name": "Google Docs account"
+        }
+      }
+    },
+    {
+      "id": "d0e1f2a3-b4c5-4678-defa-789012345678",
+      "name": "Move to Reviewed",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [2220, 140],
+      "parameters": {
+        "operation": "move",
+        "fileId": {
+          "__rl": true,
+          "value": "={{ $('Split In Batches').item.json.id }}",
+          "mode": "id"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "={{ $vars.DRIVE_REVIEWED_FOLDER_ID }}",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "1",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "id": "e1f2a3b4-c5d6-4789-efab-890123456789",
+      "name": "Gmail - Send Notification",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [2440, 140],
+      "parameters": {
+        "operation": "send",
+        "toList": "={{ $env.NOTIFY_EMAIL }}",
+        "subject": "={{ '【契約書レビュー完了】' + $('Parse Gemini Response').item.json.fileName }}",
+        "emailType": "html",
+        "message": "={{ '<h2>契約書AIレビューが完了しました</h2><p><strong>ファイル名:</strong> ' + $('Parse Gemini Response').item.json.fileName + '</p><p><strong>リスク件数:</strong> ' + $('Parse Gemini Response').item.json.riskSummary + '</p><p><strong>総合リスクレベル:</strong> ' + $('Parse Gemini Response').item.json.overall_risk_level + '</p><p><strong>総評:</strong><br>' + $('Parse Gemini Response').item.json.summary + '</p><hr><p><a href=\"' + $('Create Review Document').item.json.webViewLink + '\">レビュー結果ドキュメントを開く</a></p><hr><p><em>※ 本レビューはAIによる補助資料です。最終判断は必ず法務担当者が行ってください。</em></p>' }}",
+        "options": {}
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "3",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "id": "f2a3b4c5-d6e7-4890-fabc-901234567890",
+      "name": "Sheets - Append Log",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4,
+      "position": [2660, 140],
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $vars.SHEETS_LOG_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "ログ",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "処理日時": "={{ $('Parse Gemini Response').item.json.reviewed_at_utc }}",
+            "ファイル名": "={{ $('Parse Gemini Response').item.json.fileName }}",
+            "高リスク数": "={{ $('Parse Gemini Response').item.json.risk_counts.high }}",
+            "中リスク数": "={{ $('Parse Gemini Response').item.json.risk_counts.medium }}",
+            "低リスク数": "={{ $('Parse Gemini Response').item.json.risk_counts.low }}",
+            "総合リスク": "={{ $('Parse Gemini Response').item.json.overall_risk_level }}",
+            "ステータス": "完了",
+            "DocsURL": "={{ $('Create Review Document').item.json.webViewLink }}"
+          }
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "4",
+          "name": "Google Sheets account"
+        }
+      },
+      "notes": "n8n Variables に SHEETS_LOG_ID を設定。シート名は「ログ」で作成しておくこと。"
+    },
+    {
+      "id": "a3b4c5d6-e7f8-4901-abcd-012345678901",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [240, -100],
+      "parameters": {},
+      "notes": "このワークフロー自体をエラーワークフローとして Settings > Error Workflow に設定してください。"
+    },
+    {
+      "id": "b4c5d6e7-f8a9-4012-bcde-123456789012",
+      "name": "Move Back to Inbox",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [460, -100],
+      "parameters": {
+        "operation": "move",
+        "fileId": {
+          "__rl": true,
+          "value": "={{ $json.execution.data.resultData.lastNodeExecuted && $('Split In Batches') ? $('Split In Batches').item.json.id : '' }}",
+          "mode": "id"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "={{ $vars.DRIVE_INBOX_FOLDER_ID }}",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "1",
+          "name": "Google Drive account"
+        }
+      },
+      "notes": "エラー時: 処理中ファイルを 02_processing → 01_inbox に戻す"
+    },
+    {
+      "id": "c5d6e7f8-a9b0-4123-cdef-234567890123",
+      "name": "Gmail - Error Notification",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2,
+      "position": [680, -100],
+      "parameters": {
+        "operation": "send",
+        "toList": "={{ $env.NOTIFY_EMAIL }}",
+        "subject": "【エラー】契約書AIレビューワークフローで問題が発生しました",
+        "emailType": "html",
+        "message": "={{ '<h2>ワークフローエラー</h2><p><strong>エラー発生ノード:</strong> ' + $json.execution.data.resultData.lastNodeExecuted + '</p><p><strong>エラーメッセージ:</strong><br>' + ($json.execution.data.resultData.error?.message || '不明') + '</p><p>ファイルは 01_inbox に戻されました。確認してください。</p>' }}",
+        "options": {}
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "3",
+          "name": "Gmail account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Contract Review Poller": {
+      "main": [
+        [{"node": "List Files in Inbox", "type": "main", "index": 0}]
+      ]
+    },
+    "List Files in Inbox": {
+      "main": [
+        [{"node": "Files Found?", "type": "main", "index": 0}]
+      ]
+    },
+    "Files Found?": {
+      "main": [
+        [{"node": "Split In Batches", "type": "main", "index": 0}],
+        [{"node": "No Files - End", "type": "main", "index": 0}]
+      ]
+    },
+    "Split In Batches": {
+      "main": [
+        [{"node": "Move to Processing", "type": "main", "index": 0}]
+      ]
+    },
+    "Move to Processing": {
+      "main": [
+        [{"node": "GAS WebApp - Extract Text", "type": "main", "index": 0}]
+      ]
+    },
+    "GAS WebApp - Extract Text": {
+      "main": [
+        [{"node": "Gemini API - Analyze Contract", "type": "main", "index": 0}]
+      ]
+    },
+    "Gemini API - Analyze Contract": {
+      "main": [
+        [{"node": "Parse Gemini Response", "type": "main", "index": 0}]
+      ]
+    },
+    "Parse Gemini Response": {
+      "main": [
+        [{"node": "Create Review Document", "type": "main", "index": 0}]
+      ]
+    },
+    "Create Review Document": {
+      "main": [
+        [{"node": "Move to Reviewed", "type": "main", "index": 0}]
+      ]
+    },
+    "Move to Reviewed": {
+      "main": [
+        [{"node": "Gmail - Send Notification", "type": "main", "index": 0}]
+      ]
+    },
+    "Gmail - Send Notification": {
+      "main": [
+        [{"node": "Sheets - Append Log", "type": "main", "index": 0}]
+      ]
+    },
+    "Sheets - Append Log": {
+      "main": [
+        [{"node": "Split In Batches", "type": "main", "index": 0}]
+      ]
+    },
+    "Error Trigger": {
+      "main": [
+        [{"node": "Move Back to Inbox", "type": "main", "index": 0}]
+      ]
+    },
+    "Move Back to Inbox": {
+      "main": [
+        [{"node": "Gmail - Error Notification", "type": "main", "index": 0}]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "tags": [
+    {"id": "1", "name": "legal"},
+    {"id": "2", "name": "ai"}
+  ],
+  "triggerCount": 1,
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "n8nVersion": "1.0.0"
+  }
+}
