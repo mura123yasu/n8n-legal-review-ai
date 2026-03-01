@@ -6,7 +6,7 @@
  *   - アクセス: 全員（URLを知っている人）
  *
  * 使用する高度なサービス:
- *   - Drive API v2（appsscript.json で有効化済み）
+ *   - Drive API v3（appsscript.json で有効化済み）
  */
 
 /**
@@ -48,17 +48,16 @@ function doPost(e) {
     var file = DriveApp.getFileById(fileId);
 
     // OCR 変換: PDF → Google ドキュメント
-    // Drive API v2 の Files.insert を使ってOCRを有効にした状態でインポート
+    // Drive API v3 の Files.create を使ってOCRを有効にした状態でインポート
     var tmpTitle = 'ocr_tmp_' + fileId + '_' + new Date().getTime();
     var resource = {
-      title: tmpTitle,
+      name: tmpTitle,
       mimeType: MimeType.GOOGLE_DOCS
     };
     var options = {
-      ocr: true,
       ocrLanguage: 'ja'
     };
-    var tmpDoc = Drive.Files.insert(resource, file.getBlob(), options);
+    var tmpDoc = Drive.Files.create(resource, file.getBlob(), options);
     tmpDocId = tmpDoc.id;
 
     // 変換された Google ドキュメントからテキストを取得
